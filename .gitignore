@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+
+# Logs pulled off the device
+*.csv
