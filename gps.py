@@ -123,6 +123,26 @@ def build_ubx_packet(msg_class, msg_id, payload):
     return header + payload + ubx_checksum(body)
 
 
+# UBX-CFG-MSG message ids for the standard NMEA talker (message class 0xF0).
+NMEA_MSG_CLASS = 0xF0
+NMEA_MSG_GGA = 0x00
+NMEA_MSG_GLL = 0x01
+NMEA_MSG_GSA = 0x02
+NMEA_MSG_GSV = 0x03
+NMEA_MSG_RMC = 0x04
+NMEA_MSG_VTG = 0x05
+
+
+def build_cfg_msg_packet(nmea_msg_id, rate):
+    """Build a UBX-CFG-MSG packet setting one NMEA sentence's output rate.
+
+    rate is sentences emitted per navigation solution; 0 disables the
+    sentence entirely.
+    """
+    payload = bytes([NMEA_MSG_CLASS, nmea_msg_id & 0xFF, rate & 0xFF])
+    return build_ubx_packet(0x06, 0x01, payload)
+
+
 def build_cfg_rate_packet(update_hz):
     if update_hz < 1:
         update_hz = 1

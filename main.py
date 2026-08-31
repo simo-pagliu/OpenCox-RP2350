@@ -243,21 +243,29 @@ gps_uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1), rxbuf=GPS_UART_RXBUF_BYT
 print("GPS UART initialized.")
 print("GPS waiting for data...")
 
-enable_gpgga = bytes([0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x00, 0xFF, 0x00, 0xFD, 0x00])
-enable_gprmc = bytes([0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x01, 0xFE, 0x01, 0xFC, 0x01])
-enable_gpgsa = bytes([0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x02, 0xFD, 0x02, 0xFB, 0x02])
-enable_gpvtg = bytes([0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x05, 0xFC, 0x05, 0xFA, 0x05])
-set_cfg_rate = gps.build_cfg_rate_packet(GPS_UPDATE_HZ)
+# Sentences per navigation solution. GLL is switched off because nothing
+# parses it and it is pure UART load; every other sentence here feeds a
+# column of the log or a field on the display.
+GPS_NMEA_RATES = (
+    (gps.NMEA_MSG_GGA, 1),
+    (gps.NMEA_MSG_RMC, 1),
+    (gps.NMEA_MSG_GSA, 1),
+    (gps.NMEA_MSG_GSV, 1),
+    (gps.NMEA_MSG_VTG, 1),
+    (gps.NMEA_MSG_GLL, 0),
+)
 
 try:
-    gps_uart.write(set_cfg_rate);  utime.sleep(0.1)
-    gps_uart.write(enable_gpgga);  utime.sleep(0.1)
-    gps_uart.write(enable_gprmc);  utime.sleep(0.1)
-    gps_uart.write(enable_gpgsa);  utime.sleep(0.1)
-    gps_uart.write(enable_gpvtg);  utime.sleep(0.1)
-    print("GPS configured to %dHz and NMEA enabled: GGA, RMC, GSA, VTG" % GPS_UPDATE_HZ)
+    gps_uart.write(gps.build_cfg_rate_packet(GPS_UPDATE_HZ))
+    utime.sleep(0.1)
+    for nmea_msg_id, nmea_rate in GPS_NMEA_RATES:
+        gps_uart.write(gps.build_cfg_msg_packet(nmea_msg_id, nmea_rate))
+        utime.sleep(0.1)
+    # "sent", not "configured": the receiver's UBX-ACK is never read back,
+    # so this only reports what went out on the wire.
+    print("GPS config sent: %dHz, NMEA GGA/RMC/GSA/GSV/VTG on, GLL off" % GPS_UPDATE_HZ)
 except Exception as e:
-    print("GPS UBX enable failed:", e)
+    print("GPS UBX config failed:", e)
 
 utime.sleep(1)
 while gps_uart.any():
