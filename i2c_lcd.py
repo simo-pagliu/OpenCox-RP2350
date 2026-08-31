@@ -1,4 +1,4 @@
-from utime import sleep_ms
+from utime import sleep_ms, sleep_us
 
 from lcd_api import LcdApi
 
@@ -37,13 +37,16 @@ class I2cLcd(LcdApi):
 
     def hal_write_command(self, cmd):
         self._write_byte(cmd, self.LCD_CMD)
+        # Clear Display and Return Home take 1.52 ms on an HD44780; every
+        # other command is 37 us and is already covered by the settle in
+        # _write_byte. Waiting here rather than in clear() means the DDRAM
+        # write that move_to() issues straight after a clear cannot land
+        # while the controller is still busy.
+        if cmd in (self.LCD_CLR, self.LCD_HOME):
+            sleep_ms(2)
 
     def hal_write_data(self, data):
         self._write_byte(data, self.LCD_CHR)
-
-    def clear(self):
-        super().clear()
-        sleep_ms(2)
 
     def backlight_on(self):
         self.backlight = self.LCD_BACKLIGHT
@@ -65,6 +68,7 @@ class I2cLcd(LcdApi):
         self._pulse_enable(high)
         self._expander_write(low)
         self._pulse_enable(low)
+        sleep_us(50)  # HD44780 command/data execution time is 37 us
 
     def _expander_write(self, data):
         try:
@@ -73,7 +77,14 @@ class I2cLcd(LcdApi):
             pass
 
     def _pulse_enable(self, data):
+        # The HD44780 needs E high for >=450 ns and a >=1 us cycle time. A
+        # single-byte write to the PCF8574 at 400 kHz already takes ~50 us,
+        # so the bus transaction itself covers both; sleep_us(1) is margin.
+        # These were sleep_ms(1), which made every character 4 ms and every
+        # four-line refresh ~336 ms of blocking sleep out of a 500 ms
+        # period -- long enough to overrun the GPS UART buffer and lose most
+        # of the NMEA stream.
         self._expander_write(data | self.ENABLE)
-        sleep_ms(1)
+        sleep_us(1)
         self._expander_write(data & ~self.ENABLE)
-        sleep_ms(1)
+        sleep_us(1)
