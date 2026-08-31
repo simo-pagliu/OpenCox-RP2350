@@ -237,7 +237,9 @@ if sd:
 # ---------------------------------------------------------------------------
 # Hardware init: GPS UART + UBX configuration
 # ---------------------------------------------------------------------------
-gps_uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1))
+GPS_UART_RXBUF_BYTES = 1024  # ~1.07 s of headroom at 9600 baud
+
+gps_uart = UART(0, baudrate=9600, tx=Pin(0), rx=Pin(1), rxbuf=GPS_UART_RXBUF_BYTES)
 print("GPS UART initialized.")
 print("GPS waiting for data...")
 
