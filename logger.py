@@ -187,7 +187,9 @@ def log_status_row(uptime_ms):
         hdop_val,
         quality_val,
         course_val,
-    ]
+        "",
+        "",
+    ] + [""] * SHAPE_POINT_COUNT
     return ",".join(fields) + "\n"
 
 
