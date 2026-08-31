@@ -12,7 +12,8 @@ import math
 gps_buffer = ""
 gps_fix = False
 gps_quality = None
-gps_sats = None
+gps_sats = None         # satellites used in the position solution (GGA)
+gps_sats_in_view = None  # satellites the receiver can see (GSV), non-zero well before a fix
 gps_lat = None
 gps_lon = None
 gps_time = None
@@ -185,7 +186,7 @@ def build_cfg_rate_packet(update_hz):
 # ---------------------------------------------------------------------------
 
 def update_gps_state(sentence):
-    global gps_fix, gps_quality, gps_sats, gps_lat, gps_lon
+    global gps_fix, gps_quality, gps_sats, gps_sats_in_view, gps_lat, gps_lon
     global gps_rx_ms, gps_sentence_count, gps_bad_sentence_count, gps_last_sentence
     global gps_seen_data, gps_lost_reported, stopped
     global gps_time, gps_date, gps_speed, gps_speed_ms
@@ -244,7 +245,12 @@ def update_gps_state(sentence):
             last_speed_update_ms = utime.ticks_ms()
 
     elif message_type == "GSV" and len(parts) >= 4:
-        gps_sats = parts[3] or gps_sats
+        # GSV field 3 is satellites in VIEW, a different quantity from GGA's
+        # satellites used in the solution. Writing it to gps_sats made the two
+        # alternate in the same variable depending on which sentence arrived
+        # last. In view is the useful number while acquiring: it climbs long
+        # before the fix, so it tells you the receiver is making progress.
+        gps_sats_in_view = parts[3] or gps_sats_in_view
 
     elif message_type == "GLL" and len(parts) >= 7:
         lat = parse_nmea_coordinate(parts[1], parts[2])
@@ -393,6 +399,7 @@ def gps_console_line():
 def gps_state_line():
     quality = gps_quality if gps_quality not in (None, "") else "-"
     sats = gps_sats if gps_sats not in (None, "") else "--"
+    in_view = gps_sats_in_view if gps_sats_in_view not in (None, "") else "--"
     hdop = "%.1f" % gps_hdop if gps_hdop is not None else "--"
     course = format_course(gps_course)
     if gps_fix:
@@ -401,7 +408,7 @@ def gps_state_line():
         status = "RX"
     else:
         status = "NO"
-    return "GPS %s Q%s S%s C%s" % (status, quality, sats, course)
+    return "GPS %s Q%s S%s/%s H%s C%s" % (status, quality, sats, in_view, hdop, course)
 
 
 def gps_pos_line():

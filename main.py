@@ -397,7 +397,11 @@ while True:
             lcd.move_to(0, 2)
             lcd.putstr(display.fit_line("SPD:%.1fm/s" % (gps.gps_speed_ms or 0)))
             lcd.move_to(0, 3)
-            lcd.putstr(display.fit_line("SATS:%s HDOP:%.1f" % (gps.gps_sats or "--", gps.gps_hdop or 0)))
+            # used/in view: during a cold start the first number sits at 0
+            # while the second climbs, which is the only on-boat sign that
+            # the receiver is acquiring rather than dead.
+            lcd.putstr(display.fit_line("SAT:%s/%s HDOP:%.1f" % (
+                gps.gps_sats or "--", gps.gps_sats_in_view or "--", gps.gps_hdop or 0)))
         except OSError as e:
             print("LCD I2C error:", e)
 
