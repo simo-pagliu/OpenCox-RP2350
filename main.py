@@ -280,7 +280,6 @@ last_lcd_ms = utime.ticks_ms()
 last_flush_ms = last_lcd_ms
 last_gps_write_ms = last_lcd_ms
 last_status_write_ms = last_lcd_ms
-last_accel_ms = last_lcd_ms
 last_storage_check_ms = last_lcd_ms
 first_fix_seen = False  # sticky: set once on the first real fix, never cleared
 
@@ -326,29 +325,38 @@ while True:
         except OSError as e:
             print("MPU I2C error:", e)
             samples = []
-        for i, sample in enumerate(samples):
-            ts = utime.ticks_add(last_accel_ms, i * ACCEL_LOG_INTERVAL_MS)
-            stroke_flag = detect_stroke(sample['accel'], ts)
-            catch_duration_ms = stroke_detector.get_catch_duration_ms() if stroke_detector.catch_duration_available() else None
-            exit_duration_ms = stroke_detector.get_exit_duration_ms() if stroke_detector.exit_duration_available() else None
-            stroke_shape = stroke_detector.get_stroke_shape() if stroke_detector.stroke_shape_available() else None
-            if logger.events_log_file:
-                try:
-                    logger.events_log_file.write(logger.log_accel_row(
-                        ts, sample['accel'], sample['gyro'], 1 if stroke_flag else 0,
-                        catch_duration_ms, exit_duration_ms, stroke_shape
-                    ))
-                except OSError as e:
-                    print("Log write error:", e)
-                    logger.events_log_file = None
-                    logging_started = False
-                    logger.sd_status = "KO"
-                    switch_to_flash_log()
-        last_accel_ms = utime.ticks_add(last_accel_ms, len(samples) * ACCEL_LOG_INTERVAL_MS)
-        # Update stroke timeout using latest sample time
         if samples:
-            latest_ts = utime.ticks_add(last_accel_ms, (len(samples) - 1) * ACCEL_LOG_INTERVAL_MS)
-            if stroke_detector.last_stroke_time_ms > 0 and utime.ticks_diff(latest_ts, stroke_detector.last_stroke_time_ms) > STROKE_MAX_INTERVAL_MS:
+            # The newest sample in the FIFO was captured at ~now_ms and the
+            # batch is evenly spaced at the configured rate, so timestamp
+            # backwards from the read. This re-anchors to the real clock on
+            # every batch. The old scheme advanced a counter by exactly 10 ms
+            # per sample and never resynced, so one failed read or FIFO
+            # overflow left the A rows permanently out of step with the G rows
+            # in the same file.
+            batch_start_ms = utime.ticks_add(now_ms, -(len(samples) - 1) * ACCEL_LOG_INTERVAL_MS)
+            for i, sample in enumerate(samples):
+                ts = utime.ticks_add(batch_start_ms, i * ACCEL_LOG_INTERVAL_MS)
+                stroke_flag = detect_stroke(sample['accel'], ts)
+                catch_duration_ms = stroke_detector.get_catch_duration_ms() if stroke_detector.catch_duration_available() else None
+                exit_duration_ms = stroke_detector.get_exit_duration_ms() if stroke_detector.exit_duration_available() else None
+                stroke_shape = stroke_detector.get_stroke_shape() if stroke_detector.stroke_shape_available() else None
+                if logger.events_log_file:
+                    try:
+                        logger.events_log_file.write(logger.log_accel_row(
+                            ts, sample['accel'], sample['gyro'], 1 if stroke_flag else 0,
+                            catch_duration_ms, exit_duration_ms, stroke_shape
+                        ))
+                    except OSError as e:
+                        print("Log write error:", e)
+                        logger.events_log_file = None
+                        logging_started = False
+                        logger.sd_status = "KO"
+                        switch_to_flash_log()
+            # Stroke timeout is measured against the newest sample, which is
+            # now_ms. The old latest_ts double-counted: last_accel_ms had
+            # already been advanced by the whole batch before another
+            # (len - 1) intervals were added on top.
+            if stroke_detector.last_stroke_time_ms > 0 and utime.ticks_diff(now_ms, stroke_detector.last_stroke_time_ms) > STROKE_MAX_INTERVAL_MS:
                 stroke_detector.reset()
     
     # Distance
