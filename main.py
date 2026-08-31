@@ -301,9 +301,10 @@ while True:
                     logger.events_log_file.close()
                 logger.events_log_file = None
 
-    # Accel logging waits for the first real fix (avoids padding every file
-    # with pre-launch/idle noise), but once seen it stays on even through a
-    # later momentary GPS dropout -- only the initial wait is gated on fix.
+    # first_fix_seen only anchors the distance baseline. Accel logging is
+    # deliberately NOT gated on it: a cold start can take minutes, and gating
+    # the IMU on the fix meant a session where the receiver never resolved a
+    # position produced a file with no stroke data in it at all.
     if has_gps_fix and not first_fix_seen:
         gps.sync_distance_baseline()
         first_fix_seen = True
@@ -321,7 +322,7 @@ while True:
             catch_duration_ms = stroke_detector.get_catch_duration_ms() if stroke_detector.catch_duration_available() else None
             exit_duration_ms = stroke_detector.get_exit_duration_ms() if stroke_detector.exit_duration_available() else None
             stroke_shape = stroke_detector.get_stroke_shape() if stroke_detector.stroke_shape_available() else None
-            if first_fix_seen and logger.events_log_file:
+            if logger.events_log_file:
                 try:
                     logger.events_log_file.write(logger.log_accel_row(
                         ts, sample['accel'], sample['gyro'], 1 if stroke_flag else 0,
