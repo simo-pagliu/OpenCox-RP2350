@@ -23,7 +23,8 @@ gps_course = None       # Course over ground in degrees
 gps_hdop = None         # Horizontal Dilution of Precision
 gps_last_sentence = ""
 gps_rx_ms = 0
-gps_sentence_count = 0
+gps_sentence_count = 0   # sentences that passed their NMEA checksum
+gps_bad_sentence_count = 0  # sentences rejected by the checksum (truncation/corruption)
 gps_raw_byte_count = 0  # total bytes ever read from the GPS UART, valid or not
 gps_last_print_ms = 0
 gps_seen_data = False
@@ -75,6 +76,27 @@ def parse_nmea_float(raw_value):
         return float(value)
     except ValueError:
         return None
+
+
+def nmea_checksum_valid(sentence):
+    """Validate an NMEA sentence's trailing *XX checksum.
+
+    A sentence with no checksum is rejected rather than trusted: when the
+    UART overruns, the surviving head of a sentence is indistinguishable
+    from a complete but unchecksummed one, and every sentence the receiver
+    is configured to emit carries a checksum.
+    """
+    star = sentence.rfind("*")
+    if star < 1 or star + 3 > len(sentence):
+        return False
+    try:
+        expected = int(sentence[star + 1:star + 3], 16)
+    except ValueError:
+        return False
+    checksum = 0
+    for char in sentence[1:star]:
+        checksum ^= ord(char)
+    return checksum == expected
 
 
 def parse_gps_time(time_str, date_str=None):
@@ -164,12 +186,18 @@ def build_cfg_rate_packet(update_hz):
 
 def update_gps_state(sentence):
     global gps_fix, gps_quality, gps_sats, gps_lat, gps_lon
-    global gps_rx_ms, gps_sentence_count, gps_last_sentence
+    global gps_rx_ms, gps_sentence_count, gps_bad_sentence_count, gps_last_sentence
     global gps_seen_data, gps_lost_reported, stopped
     global gps_time, gps_date, gps_speed, gps_speed_ms
     global gps_course, gps_hdop, speed_update_count, last_speed_update_ms
 
     if not sentence.startswith("$"):
+        return
+    if not nmea_checksum_valid(sentence):
+        # Parsing a truncated sentence is worse than dropping it: the field
+        # positions still line up, so a half-received GGA would be read as
+        # authoritative fix state.
+        gps_bad_sentence_count += 1
         return
     gps_sentence_count += 1
     gps_last_sentence = sentence
