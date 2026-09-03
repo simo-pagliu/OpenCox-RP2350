@@ -70,6 +70,12 @@ class PicoStrokeDetector:
         self.last_stroke_shape = None
         self.stroke_shape_ready = False
 
+        # The most recently completed stroke, as one record. See
+        # _close_stroke_record() for why a stroke is only complete once the
+        # next catch arrives.
+        self.completed_stroke = None
+        self.stroke_record_ready = False
+
     def detect_stroke(self, accel_x, accel_y, accel_z, current_time_ms):
         magnitude = math.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
         self.last_catch_detected = False
@@ -77,6 +83,7 @@ class PicoStrokeDetector:
         self.catch_duration_ready = False
         self.exit_duration_ready = False
         self.stroke_shape_ready = False
+        self.stroke_record_ready = False
 
         if self.last_magnitude is None:
             self.last_magnitude = magnitude
@@ -119,6 +126,7 @@ class PicoStrokeDetector:
 
         if self.last_stroke_time_ms > 0:
             self._update_spm_and_shape(interval_ms, current_time_ms)
+            self._close_stroke_record(interval_ms, current_time_ms)
 
         self.last_stroke_time_ms = current_time_ms
         self.stroke_count += 1
@@ -143,6 +151,37 @@ class PicoStrokeDetector:
         avg_interval = sum(self.stroke_intervals) / len(self.stroke_intervals)
         spm = int(round(60000.0 / avg_interval))
         self.current_spm = max(self.min_spm, min(self.max_spm, spm))
+
+    def _close_stroke_record(self, interval_ms, current_time_ms):
+        """Snapshot the stroke that just ended into a single record.
+
+        Called from _handle_catch, because the catch that opens stroke N is
+        also what closes stroke N-1: a stroke's period, and therefore its
+        shape, is only known once the next one starts. The catch and exit
+        transient durations measured since the previous catch belong to the
+        stroke now ending, so they are consumed here and cleared for the
+        incoming one -- otherwise a stroke whose exit was missed would
+        silently inherit the previous stroke's exit duration.
+        """
+        if self.stroke_shape_ready:
+            self.completed_stroke = {
+                "end_ms": current_time_ms,
+                "duration_ms": interval_ms,
+                "spm": self.current_spm,
+                "catch_duration_ms": self.last_catch_duration_ms,
+                "exit_duration_ms": self.last_exit_duration_ms,
+                "shape": self.last_stroke_shape,
+            }
+            self.stroke_record_ready = True
+        else:
+            # _update_spm_and_shape rejected the interval as longer than
+            # max_interval_ms: rowing stopped and restarted, so there is no
+            # coherent stroke to describe here.
+            self.completed_stroke = None
+            self.stroke_record_ready = False
+
+        self.last_catch_duration_ms = None
+        self.last_exit_duration_ms = None
 
     def _update_catch_duration(self, delta, threshold, current_time_ms):
         if self.catch_active and delta < threshold:
@@ -212,27 +251,24 @@ class PicoStrokeDetector:
         """Return True when the latest detect_stroke call flagged blade exit."""
         return self.last_exit_detected
 
-    def catch_duration_available(self):
-        """Return True when the latest detect_stroke call closed a catch transient."""
-        return self.catch_duration_ready
+    def stroke_record_available(self):
+        """Return True when the latest detect_stroke call completed a stroke.
 
-    def get_catch_duration_ms(self):
-        return self.last_catch_duration_ms
+        Replaces the old catch_duration_available/exit_duration_available/
+        stroke_shape_available trio: those each became true on a different
+        sample, so the caller had to smear one stroke's metrics across
+        several rows. One stroke now produces one record.
+        """
+        return self.stroke_record_ready
 
-    def exit_duration_available(self):
-        """Return True when the latest detect_stroke call closed an exit transient."""
-        return self.exit_duration_ready
+    def get_stroke_record(self):
+        """Return the completed stroke as a dict, or None if none has completed.
 
-    def get_exit_duration_ms(self):
-        return self.last_exit_duration_ms
-
-    def stroke_shape_available(self):
-        """Return True when the latest detect_stroke call completed a full stroke shape."""
-        return self.stroke_shape_ready
-
-    def get_stroke_shape(self):
-        """Return the last stroke's acceleration-magnitude shape as SHAPE_FRACTIONS values."""
-        return self.last_stroke_shape
+        Keys: end_ms, duration_ms, spm, catch_duration_ms, exit_duration_ms,
+        shape. catch_duration_ms and exit_duration_ms are None when that
+        transient was never closed during the stroke.
+        """
+        return self.completed_stroke
 
     def reset(self):
         self.last_magnitude = None
@@ -258,3 +294,5 @@ class PicoStrokeDetector:
         self._shape_buffer = []
         self.last_stroke_shape = None
         self.stroke_shape_ready = False
+        self.completed_stroke = None
+        self.stroke_record_ready = False

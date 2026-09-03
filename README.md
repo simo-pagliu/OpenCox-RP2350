@@ -99,12 +99,19 @@ Rows are tagged by `record_type` in the first column:
 |------|------|---------|
 | `A` | 100 Hz | Accelerometer, gyroscope, stroke flag |
 | `G` | 1 Hz | Position, speed, SPM, distance, satellites, HDOP |
-| `S` | 1 Hz | Diagnostics: raw UART byte count, NMEA sentence count, fix flag |
+| `S` | Per stroke | Stroke duration, SPM, catch/exit transient durations, stroke shape |
 
-`S` rows are written regardless of fix state, so a session with no GPS lock is
-still diagnosable from the CSV alone: a byte count stuck at zero means nothing
-is arriving on the UART, while a rising byte count with a sentence count stuck
-at zero means bytes arrive but never form a valid NMEA sentence.
+Every row is the full width of the header; each type fills the columns that
+belong to it and leaves the rest empty. No column means two different things
+depending on the row type, so `record_type` is the only thing you need to
+switch on.
+
+An `S` row is written when a stroke completes. Because a stroke's period is
+only known once the *next* catch arrives, `uptime_ms` on an `S` row is the
+catch that ended the stroke — the stroke covers
+`uptime_ms - stroke_duration_ms` to `uptime_ms`. To count or analyse strokes,
+select `record_type == 'S'`; the `stroke_flag` column on `A` rows marks only
+which 100 Hz sample a catch fired on.
 
 ## License
 

@@ -47,7 +47,6 @@ STROKE_MAX_INTERVAL_MS = 60000 / MIN_SPM  # ~4286 ms at 14 SPM
 
 ACCEL_LOG_INTERVAL_MS = 10       # 100 Hz
 GPS_LOG_INTERVAL_MS = 1000       # 1 Hz
-STATUS_LOG_INTERVAL_MS = 1000    # 1 Hz, independent of fix state
 DISTANCE_UPDATE_INTERVAL_MS = 1000
 STORAGE_RESERVE_BYTES = 128 * 1024
 
@@ -279,7 +278,6 @@ setup_session_log()
 last_lcd_ms = utime.ticks_ms()
 last_flush_ms = last_lcd_ms
 last_gps_write_ms = last_lcd_ms
-last_status_write_ms = last_lcd_ms
 last_storage_check_ms = last_lcd_ms
 first_fix_seen = False  # sticky: set once on the first real fix, never cleared
 
@@ -337,15 +335,19 @@ while True:
             for i, sample in enumerate(samples):
                 ts = utime.ticks_add(batch_start_ms, i * ACCEL_LOG_INTERVAL_MS)
                 stroke_flag = detect_stroke(sample['accel'], ts)
-                catch_duration_ms = stroke_detector.get_catch_duration_ms() if stroke_detector.catch_duration_available() else None
-                exit_duration_ms = stroke_detector.get_exit_duration_ms() if stroke_detector.exit_duration_available() else None
-                stroke_shape = stroke_detector.get_stroke_shape() if stroke_detector.stroke_shape_available() else None
                 if logger.events_log_file:
                     try:
                         logger.events_log_file.write(logger.log_accel_row(
-                            ts, sample['accel'], sample['gyro'], 1 if stroke_flag else 0,
-                            catch_duration_ms, exit_duration_ms, stroke_shape
+                            ts, sample['accel'], sample['gyro'], 1 if stroke_flag else 0
                         ))
+                        # This catch closed the previous stroke, so its
+                        # metrics are now final: emit them as one S row
+                        # rather than smearing them across whichever A rows
+                        # each value happened to become available on.
+                        if stroke_detector.stroke_record_available():
+                            logger.events_log_file.write(logger.log_stroke_row(
+                                ts, stroke_detector.get_stroke_record()
+                            ))
                     except OSError as e:
                         print("Log write error:", e)
                         logger.events_log_file = None
@@ -366,15 +368,9 @@ while True:
     # Write GPS to SD at 1Hz
     if logger.events_log_file:
         try:
-            if has_gps_fix:
-                if utime.ticks_diff(now_ms, last_gps_write_ms) >= GPS_LOG_INTERVAL_MS:
-                    logger.events_log_file.write(logger.log_gps_row(gps.gps_time, gps.gps_speed_ms, get_spm(), gps.total_distance_m, now_ms))
-                    last_gps_write_ms = now_ms
-            elif utime.ticks_diff(now_ms, last_status_write_ms) >= STATUS_LOG_INTERVAL_MS:
-                # No fix yet: still record sentence/quality diagnostics so a
-                # field test without a display is diagnosable afterward.
-                logger.events_log_file.write(logger.log_status_row(now_ms))
-                last_status_write_ms = now_ms
+            if has_gps_fix and utime.ticks_diff(now_ms, last_gps_write_ms) >= GPS_LOG_INTERVAL_MS:
+                logger.events_log_file.write(logger.log_gps_row(gps.gps_time, gps.gps_speed_ms, get_spm(), gps.total_distance_m, now_ms))
+                last_gps_write_ms = now_ms
             # Flush periodically
             if utime.ticks_diff(now_ms, last_flush_ms) >= LOG_FLUSH_INTERVAL_MS:
                 logger.events_log_file.flush()
