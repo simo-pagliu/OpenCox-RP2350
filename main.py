@@ -5,6 +5,7 @@ import os
 from mpu6050 import MPU6050
 from i2c_lcd import I2cLcd
 from stroke_detection import PicoStrokeDetector
+from gyro_stroke_detection import PicoGyroSpmDetector
 import gps
 import logger
 import display
@@ -45,6 +46,11 @@ MIN_SPM = 14
 MAX_SPM = 55
 STROKE_MAX_INTERVAL_MS = 60000 / MIN_SPM  # ~4286 ms at 14 SPM
 
+# Separate, tighter cap for the gyro-based SPM detector: at MAX_SPM (55), a
+# mid-cycle peak misclassified as "big" 1.1-1.2s after a real catch still
+# passed the resulting min-interval sanity check (implying ~52-55 SPM).
+GYRO_MAX_SPM = 50
+
 ACCEL_LOG_INTERVAL_MS = 10       # 100 Hz
 GPS_LOG_INTERVAL_MS = 1000       # 1 Hz
 DISTANCE_UPDATE_INTERVAL_MS = 1000
@@ -53,7 +59,16 @@ STORAGE_RESERVE_BYTES = 128 * 1024
 # ---------------------------------------------------------------------------
 # Stroke detection
 # ---------------------------------------------------------------------------
+# PicoStrokeDetector (accel-magnitude based) still owns catch/exit duration
+# and stroke-shape detection for the S rows -- that part of the algorithm is
+# unchanged pending further validation of what "catch" and "exit" actually
+# are in this signal. SPM itself, however, is now driven by
+# PicoGyroSpmDetector: offline analysis showed gyro_x has one clean, sharply
+# dominant peak per stroke (unlike the accel magnitude, which shows two
+# similarly-sized events per stroke and is unreliable for telling strokes
+# apart), so it gives a much more accurate stroke period/SPM.
 stroke_detector = PicoStrokeDetector(min_spm=MIN_SPM, max_spm=MAX_SPM)
+gyro_spm_detector = PicoGyroSpmDetector(min_spm=MIN_SPM, max_spm=GYRO_MAX_SPM)
 
 
 def calculate_accel_magnitude(accel_data):
@@ -63,24 +78,27 @@ def calculate_accel_magnitude(accel_data):
     return (x**2 + y**2 + z**2) ** 0.5
 
 
-def detect_stroke(accel_data, current_time_ms):
+def detect_stroke(accel_data, gyro_data, current_time_ms):
     accel_x = accel_data.get("x", 0.0)
     accel_y = accel_data.get("y", 0.0)
     accel_z = accel_data.get("z", 0.0)
     catch_detected = stroke_detector.detect_stroke(accel_x, accel_y, accel_z, current_time_ms)
     if stroke_detector.exit_detected():
         print("Blade exit detected")
-    if catch_detected:
-        spm_value = stroke_detector.get_spm()
+
+    gyro_catch_detected = gyro_spm_detector.update(gyro_data.get("x", 0.0), current_time_ms)
+    if gyro_catch_detected:
+        spm_value = gyro_spm_detector.get_spm()
         if spm_value > 0:
             print("Catch: %d SPM" % spm_value)
         else:
             print("First catch detected")
+
     return catch_detected
 
 
 def get_spm():
-    return stroke_detector.get_spm()
+    return gyro_spm_detector.get_spm()
 
 
 def get_adaptive_threshold():
@@ -334,7 +352,7 @@ while True:
             batch_start_ms = utime.ticks_add(now_ms, -(len(samples) - 1) * ACCEL_LOG_INTERVAL_MS)
             for i, sample in enumerate(samples):
                 ts = utime.ticks_add(batch_start_ms, i * ACCEL_LOG_INTERVAL_MS)
-                stroke_flag = detect_stroke(sample['accel'], ts)
+                stroke_flag = detect_stroke(sample['accel'], sample['gyro'], ts)
                 if logger.events_log_file:
                     try:
                         logger.events_log_file.write(logger.log_accel_row(
@@ -360,6 +378,11 @@ while True:
             # (len - 1) intervals were added on top.
             if stroke_detector.last_stroke_time_ms > 0 and utime.ticks_diff(now_ms, stroke_detector.last_stroke_time_ms) > STROKE_MAX_INTERVAL_MS:
                 stroke_detector.reset()
+            # gyro_spm_detector does NOT get the same treatment: its
+            # _handle_catch already clears stroke_intervals/current_spm the
+            # moment a too-long gap is seen, and its adaptive big/small peak
+            # levels should carry over across a brief pause rather than
+            # being wiped and forced to re-bootstrap on every stop.
     
     # Distance
     if has_gps_fix:
