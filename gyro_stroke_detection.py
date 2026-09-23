@@ -90,6 +90,12 @@ class PicoGyroSpmDetector:
 
         filtered = self._smooth(gyro_x)
 
+        if self.last_catch_time_ms and current_time_ms - self.last_catch_time_ms > self.max_interval_ms:
+            # No catch for longer than the slowest plausible stroke: the last
+            # SPM is stale, don't keep reporting it.
+            self.stroke_intervals = []
+            self.current_spm = 0
+
         if self.trough_since_peak is None:
             self.trough_since_peak = filtered
             self.filtered = filtered
@@ -132,10 +138,10 @@ class PicoGyroSpmDetector:
         if prominence < self.min_prominence:
             return  # too small to be either stroke feature -- sample noise
 
-        if self._classify_and_update(prominence):
+        if self._classify_and_update(prominence, current_time_ms):
             self._handle_catch(current_time_ms)
 
-    def _classify_and_update(self, prominence):
+    def _classify_and_update(self, prominence, current_time_ms):
         # Bootstrap: the first two qualifying peaks seed the two levels
         # directly so the detector doesn't have to guess which is "big"
         # before it has ever seen one.
@@ -146,6 +152,14 @@ class PicoGyroSpmDetector:
             self.small_peak_level = prominence
             return False
 
+        if self.last_catch_time_ms and self._starved(current_time_ms):
+            # Big level got stuck above the real catches (e.g. a burst of
+            # unusually large peaks) so nothing classifies as big any more.
+            # While starved, let it decay toward the small level so the
+            # detector re-acquires instead of staying silent for the rest of
+            # the session.
+            self.big_peak_level = 0.75 * self.big_peak_level + 0.25 * self.small_peak_level
+
         threshold = self.small_peak_level + 0.25 * (self.big_peak_level - self.small_peak_level)
         is_big = prominence >= threshold
         if is_big:
@@ -153,6 +167,9 @@ class PicoGyroSpmDetector:
         else:
             self.small_peak_level = 0.875 * self.small_peak_level + 0.125 * prominence
         return is_big
+
+    def _starved(self, current_time_ms):
+        return current_time_ms - self.last_catch_time_ms > self.max_interval_ms
 
     def _handle_catch(self, current_time_ms):
         interval_ms = current_time_ms - self.last_catch_time_ms if self.last_catch_time_ms > 0 else 0
