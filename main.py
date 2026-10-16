@@ -108,6 +108,14 @@ def get_adaptive_threshold():
     return 1.0
 
 
+def rowing_speed_ms(has_gps_fix):
+    """GPS speed while rowing; None with no fix or below MIN_ROWING_SPEED_MS."""
+    speed_ms = gps.gps_speed_ms if has_gps_fix else None
+    if speed_ms is None or speed_ms < MIN_ROWING_SPEED_MS:
+        return None
+    return speed_ms
+
+
 # ---------------------------------------------------------------------------
 # Hardware init: I2C, LCD, MPU6050
 # ---------------------------------------------------------------------------
@@ -315,6 +323,7 @@ while True:
 
     now_ms = utime.ticks_ms()
     has_gps_fix = gps.gps_fix and gps.gps_lat is not None and gps.gps_lon is not None
+    speed_ms = rowing_speed_ms(has_gps_fix)
 
     if logging_started and utime.ticks_diff(now_ms, last_storage_check_ms) >= 1000:
         last_storage_check_ms = now_ms
@@ -388,9 +397,11 @@ while True:
             # levels should carry over across a brief pause rather than
             # being wiped and forced to re-bootstrap on every stop.
     
-    # Distance
+    # Distance. Gated on the raw GPS speed, not a smoothed one: in logs 004
+    # and 005 it dipped below 1 m/s on only 5 of ~7700 seconds of steady
+    # rowing, so the dips within a stroke don't cost any real distance.
     if has_gps_fix:
-        gps.calculate_distance_traveled()
+        gps.calculate_distance_traveled(speed_ms is not None)
 
     # Write GPS to SD at 1Hz
     if logger.events_log_file:
@@ -412,9 +423,6 @@ while True:
     # LCD
     if lcd and utime.ticks_diff(now_ms, last_lcd_ms) >= LCD_INTERVAL_MS:
         last_lcd_ms = now_ms
-        speed_ms = gps.gps_speed_ms if has_gps_fix else None
-        if speed_ms is not None and speed_ms < MIN_ROWING_SPEED_MS:
-            speed_ms = None
         try:
             # Status values are kept to two letters: the row is exactly 20
             # characters with all three, so "FIX"/"FAIL" pushed the GPS

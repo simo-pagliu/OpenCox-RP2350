@@ -323,11 +323,18 @@ def gps_feed_bytes(chunk):
 # Distance tracking (Haversine)
 # ---------------------------------------------------------------------------
 
-def calculate_distance_traveled():
+def calculate_distance_traveled(rowing):
+    """Move the distance baseline to the current position.
+
+    The step is only added to total_distance_m when rowing. The baseline
+    moves either way: if it stayed put while drifting on the current or
+    manoeuvring, all of that would be added in one jump on the first step
+    after rowing resumed.
+    """
     global total_distance_m, last_gps_lat, last_gps_lon, last_gps_time
     if gps_lat is None or gps_lon is None:
         return total_distance_m
-    if last_gps_lat is not None and last_gps_lon is not None:
+    if rowing and last_gps_lat is not None and last_gps_lon is not None:
         lat1 = last_gps_lat * 3.1415926535 / 180.0
         lon1 = last_gps_lon * 3.1415926535 / 180.0
         lat2 = gps_lat * 3.1415926535 / 180.0
