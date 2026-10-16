@@ -51,6 +51,9 @@ STROKE_MAX_INTERVAL_MS = 60000 / MIN_SPM  # ~4286 ms at 14 SPM
 # passed the resulting min-interval sanity check (implying ~52-55 SPM).
 GYRO_MAX_SPM = 50
 
+# Below this the boat is drifting on the current or manoeuvring, not rowing.
+MIN_ROWING_SPEED_MS = 1.0
+
 ACCEL_LOG_INTERVAL_MS = 10       # 100 Hz
 GPS_LOG_INTERVAL_MS = 1000       # 1 Hz
 DISTANCE_UPDATE_INTERVAL_MS = 1000
@@ -294,6 +297,7 @@ setup_session_log()
 # Main loop
 # ---------------------------------------------------------------------------
 last_lcd_ms = utime.ticks_ms()
+run_start_ms = last_lcd_ms
 last_flush_ms = last_lcd_ms
 last_gps_write_ms = last_lcd_ms
 last_storage_check_ms = last_lcd_ms
@@ -408,19 +412,21 @@ while True:
     # LCD
     if lcd and utime.ticks_diff(now_ms, last_lcd_ms) >= LCD_INTERVAL_MS:
         last_lcd_ms = now_ms
+        speed_ms = gps.gps_speed_ms if has_gps_fix else None
+        if speed_ms is not None and speed_ms < MIN_ROWING_SPEED_MS:
+            speed_ms = None
         try:
+            # Status values are kept to two letters: the row is exactly 20
+            # characters with all three, so "FIX"/"FAIL" pushed the GPS
+            # status off the end of the line.
             lcd.move_to(0, 0)
-            lcd.putstr(display.fit_line("MEM:%s ACC:%s GPS:%s" % (logger.sd_status, "OK" if mpu else "FAIL", "FIX" if has_gps_fix else "NO")))
+            lcd.putstr(display.fit_line("MEM:%s ACC:%s GPS:%s" % (logger.sd_status, "OK" if mpu else "KO", "OK" if has_gps_fix else "NO")))
             lcd.move_to(0, 1)
-            lcd.putstr(display.fit_line("SPM:%d DIST:%.0fm" % (get_spm(), gps.total_distance_m or 0)))
+            lcd.putstr(display.fit_line("%s DIST:%.0fm" % (display.format_spm(get_spm()), gps.total_distance_m or 0)))
             lcd.move_to(0, 2)
-            lcd.putstr(display.fit_line("SPD:%.1fm/s" % (gps.gps_speed_ms or 0)))
+            lcd.putstr(display.fit_line(display.format_pace(speed_ms)))
             lcd.move_to(0, 3)
-            # used/in view: during a cold start the first number sits at 0
-            # while the second climbs, which is the only on-boat sign that
-            # the receiver is acquiring rather than dead.
-            lcd.putstr(display.fit_line("SAT:%s/%s HDOP:%.1f" % (
-                gps.gps_sats or "--", gps.gps_sats_in_view or "--", gps.gps_hdop or 0)))
+            lcd.putstr(display.fit_line(display.format_uptime(utime.ticks_diff(now_ms, run_start_ms))))
         except OSError as e:
             print("LCD I2C error:", e)
 

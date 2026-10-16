@@ -15,9 +15,7 @@ def format_uptime(ms):
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     seconds = total_seconds % 60
-    if hours > 0:
-        return "UP %02d:%02d:%02d" % (hours, minutes, seconds)
-    return "UP %02d:%02d" % (minutes, seconds)
+    return "TIME:%02d:%02d:%02d" % (hours, minutes, seconds)
 
 
 def trim_number(value):
@@ -50,13 +48,13 @@ def format_spm(spm):
 
 
 def format_pace(speed_ms):
-    """Format pace as mm:ss.decimals for 500 m."""
+    """Format pace as m:ss.t per 500 m."""
     if speed_ms is None or speed_ms <= 0:
-        return "P:--"
-    time_500m_s = 500.0 / speed_ms
-    minutes = int(time_500m_s // 60)
-    seconds = time_500m_s % 60
-    return "P%02d:%06.3f" % (minutes, seconds)
+        return "PACE:--"
+    # Round once, in whole tenths: rounding the seconds on their own turns
+    # 2:59.97 into "2:60.0" instead of "3:00.0".
+    tenths = int(round(5000.0 / speed_ms))
+    return "PACE:%d:%02d.%d/500m" % (tenths // 600, (tenths // 10) % 60, tenths % 10)
 
 
 def format_distance(meters):
