@@ -1,5 +1,4 @@
 """SD card logging helpers for the mixed Pico log format."""
-import utime
 import os
 import gps as _gps
 
@@ -12,20 +11,12 @@ events_log_path = None
 
 MIXED_LOG_HEADER = (
     "record_type,date,time,uptime_ms,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,"
-    "speed_mps,spm,gps_lat,gps_lon,distance_m,stroke_flag,sats,hdop,fix_quality,course_deg,"
-    "catch_duration_ms,exit_duration_ms,shape_0,shape_1,shape_2,shape_3,shape_4,"
-    "stroke_duration_ms\n"
+    "speed_mps,spm,gps_lat,gps_lon,distance_m,stroke_flag,sats,hdop,fix_quality,course_deg\n"
 )
-
-# Number of stroke-shape points on each S row (see stroke_detection.PicoStrokeDetector).
-SHAPE_POINT_COUNT = 5
 
 # Every row carries the full header width; helpers below fill the columns that
 # belong to their record type and leave the rest empty. No column ever means
-# two different things depending on the record type -- an earlier version of
-# the S row put a UART byte count in speed_mps and the GPS fix flag in
-# stroke_flag, which made every diagnostic row look like a stroke carrying a
-# nonsense speed to anything selecting rows by stroke_flag.
+# two different things depending on the record type.
 COLUMN_COUNT = len(MIXED_LOG_HEADER.strip().split(","))
 
 
@@ -57,17 +48,6 @@ def next_log_index(sd_root, prefix):
 
 
 # ---------------------------------------------------------------------------
-# Error classification
-# ---------------------------------------------------------------------------
-
-def detect_sd_error_message(error_text):
-    text = str(error_text).lower()
-    if "full" in text or "space" in text or "enospc" in text or "disk" in text:
-        return "SD FULL"
-    return "SD ERR"
-
-
-# ---------------------------------------------------------------------------
 # Log writers
 # ---------------------------------------------------------------------------
 
@@ -90,10 +70,6 @@ COL_SATS = 16
 COL_HDOP = 17
 COL_FIX_QUALITY = 18
 COL_COURSE_DEG = 19
-COL_CATCH_DURATION_MS = 20
-COL_EXIT_DURATION_MS = 21
-COL_SHAPE_0 = 22
-COL_STROKE_DURATION_MS = 27
 
 
 def _blank_row(record_type, uptime_ms):
@@ -107,41 +83,13 @@ def log_accel_row(uptime_ms, accel, gyro, stroke_flag):
     """Build a raw IMU sample row.
 
     Carries only what the sample itself measured. stroke_flag marks the
-    sample on which a catch was detected; the metrics describing the stroke
-    as a whole live on their own S row, since they are not properties of any
-    one 100 Hz sample.
+    sample on which the SPM detector completed a catch.
     """
     row = _blank_row("A", uptime_ms)
     for i, axis in enumerate(("x", "y", "z")):
         row[COL_ACCEL_X + i] = "%.4f" % accel.get(axis, 0.0)
         row[COL_GYRO_X + i] = "%.4f" % gyro.get(axis, 0.0)
     row[COL_STROKE_FLAG] = "1" if stroke_flag else "0"
-    return ",".join(row) + "\n"
-
-
-def log_stroke_row(uptime_ms, stroke):
-    """Build a stroke row from a PicoStrokeDetector.get_stroke_record() dict.
-
-    One row per completed stroke. uptime_ms is the catch that *ended* the
-    stroke, not the one that started it, so the column stays monotonic for a
-    reader streaming the file in order; the stroke spans
-    [uptime_ms - stroke_duration_ms, uptime_ms].
-    """
-    row = _blank_row("S", uptime_ms)
-    row[COL_STROKE_DURATION_MS] = "%d" % int(stroke["duration_ms"])
-    row[COL_SPM] = "%.2f" % stroke["spm"]
-
-    catch_ms = stroke.get("catch_duration_ms")
-    if catch_ms is not None:
-        row[COL_CATCH_DURATION_MS] = "%d" % int(catch_ms)
-    exit_ms = stroke.get("exit_duration_ms")
-    if exit_ms is not None:
-        row[COL_EXIT_DURATION_MS] = "%d" % int(exit_ms)
-
-    shape = stroke.get("shape")
-    if shape is not None:
-        for i in range(min(SHAPE_POINT_COUNT, len(shape))):
-            row[COL_SHAPE_0 + i] = "%.4f" % shape[i]
     return ",".join(row) + "\n"
 
 

@@ -1,59 +1,52 @@
-"""SPM detection from gyro_x (boat pitch rate) peaks.
+"""SPM detection from the boat's fore-aft acceleration.
 
-Offline analysis of on-water logs (OpenCoxUI, rowing_log001/002/003) found
-that the accelerometer-magnitude signal used by PicoStrokeDetector shows two
-similarly-sized deceleration events per stroke (catch and exit), which makes
-telling them apart from magnitude alone unreliable. gyro_x does not have
-that problem: it shows one big, sharp peak per stroke (confirmed against the
-accelerometer's own deceleration dip and against manually labeled strokes)
-with a much smaller bump partway through the cycle. The big/small amplitude
-gap is large and consistent across two different sessions and boat speeds,
-which makes it a much safer basis for stroke timing than magnitude.
+The input is the acceleration along the boat's direction of travel, in g,
+sampled at 100 Hz. main.py builds it as a weighted sum of the accelerometer
+axes (SPM_AXIS_WEIGHTS -- see the README, "Mounting and the SPM axis").
+Every stroke shows one deep deceleration dip at the catch followed by a
+sharp rise in the drive; the detector finds that rise, so its catch time
+sits ~1 s after the real catch, by the same amount every stroke.
 
-This module only replaces the *timing* used for SPM -- catch/exit semantics
-(which of the two per-stroke gyro features is biomechanically "catch" vs
-"exit", and the shape/duration metrics PicoStrokeDetector produces for the S
-rows) are a separate, not-yet-decided question and are left untouched.
-
-Parameters were fit against 100 Hz gyro_x samples from two real sessions
-(rowing_log001, ~24 min, and rowing_log003, ~70 min) by replaying them
-through this exact algorithm and comparing the resulting stroke counts and
-SPM distribution against an offline analysis (scipy, zero-phase filtering,
-full-signal peak search) of the same data -- not guessed from first
-principles, since a naive single-pole low-pass turned out to leave enough
-sample noise in gyro_x to roughly quadruple the real stroke count.
+The parameters were fit on recorded sessions, replayed through this exact
+algorithm and checked against an offline analysis of every catch.
 
 Design notes:
-  - Smoothing is 4 cascaded single-pole low-pass stages rather than one,
-    because gyro_x noise riding on top of the real per-stroke peak was
-    otherwise itself being detected as extra (spurious) peaks.
+  - Smoothing is 4 cascaded single-pole low-pass stages rather than one:
+    with one, noise riding on top of the real per-stroke peak is detected
+    as extra peaks, about 4x too many strokes.
   - A peak's "prominence" is its height above the lowest point seen since
     the previous peak -- a cheap, causal stand-in for a proper prominence
     calculation (which needs the whole signal) that's good enough given how
     large and consistent the real catch-vs-noise amplitude gap is.
   - Catch classification adapts to the running peak-height levels instead
     of using one fixed amplitude cutoff (classic ECG QRS-detection trick,
-    Pan-Tompkins), because raw gyro_x baseline/peak height differs between
-    sessions (e.g. ~40-55 baseline / ~90-127 peaks in one log vs ~60-75 /
-    ~90-130 in another) even though the big-vs-small gap itself is
+    Pan-Tompkins), because the baseline and peak height differ between
+    sessions and mountings even though the big-vs-small gap itself is
     consistently large.
 """
 
 
-class PicoGyroSpmDetector:
-    """Detect stroke catches from gyro_x peaks and compute SPM from their period."""
+def _median(values):
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+class SpmDetector:
+    """Detect strokes from fore-aft acceleration peaks and compute SPM from their period."""
 
     def __init__(
         self,
         min_spm=12,
-        max_spm=50,   # capped below the old detector's 55: at 55, a mid-cycle peak
-                      # misclassified as "big" 1.1-1.2s after a real catch (implying
-                      # ~52-55 SPM) still passed the min-interval sanity check
+        max_spm=50,   # above 50, a mid-cycle peak misclassified as "big" 1.1-1.2 s
+                      # after a real catch (~52-55 SPM) would pass the min-interval check
         smoothing_stages=4,
         smoothing_alpha=0.2,        # per-stage; 4 cascaded stages ~= a steep few-Hz low-pass at 100 Hz
-        min_prominence=25.0,        # deg/s; floor below which a peak is noise, not a stroke feature
-        min_peak_distance_ms=600,   # two real gyro_x peaks (catch or the smaller mid-cycle one) are never closer than this
-        rolling_window=5,
+        min_prominence=0.2,         # g; floor below which a peak is noise, not a stroke feature
+        min_peak_distance_ms=600,   # two real peaks (the stroke's main one or the smaller mid-cycle one) are never closer than this
+        rolling_window=3,           # SPM from the median of the last 3 intervals, see _handle_catch
     ):
         self.min_spm = min_spm
         self.max_spm = max_spm
@@ -83,12 +76,13 @@ class PicoGyroSpmDetector:
 
         self.last_catch_detected = False
 
-    def update(self, gyro_x, current_time_ms):
-        """Feed one gyro_x sample (deg/s) and its timestamp (ms). Returns True
-        exactly when this sample completed a big (catch) peak."""
+    def update(self, sample, current_time_ms):
+        """Feed one fore-aft acceleration sample (g)
+        and its timestamp (ms). Returns True exactly when this sample
+        completed a big (catch) peak."""
         self.last_catch_detected = False
 
-        filtered = self._smooth(gyro_x)
+        filtered = self._smooth(sample)
 
         if self.last_catch_time_ms and current_time_ms - self.last_catch_time_ms > self.max_interval_ms:
             # No catch for longer than the slowest plausible stroke: the last
@@ -195,8 +189,9 @@ class PicoGyroSpmDetector:
         self.stroke_intervals.append(interval_ms)
         if len(self.stroke_intervals) > self.rolling_window:
             self.stroke_intervals.pop(0)
-        avg_interval = sum(self.stroke_intervals) / len(self.stroke_intervals)
-        spm = int(round(60000.0 / avg_interval))
+        # Median of the last 3: it follows a start within a few strokes,
+        # and a single wrong catch can't move it.
+        spm = int(round(60000.0 / _median(self.stroke_intervals)))
         self.current_spm = max(self.min_spm, min(self.max_spm, spm))
 
     def get_spm(self):

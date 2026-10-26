@@ -3,3 +3,9 @@ __pycache__/
 
 # Logs pulled off the device
 *.csv
+
+# Obsolete code kept locally for reference, never pushed
+old/
+
+# Local development notes, never pushed
+DEV_NOTES.md

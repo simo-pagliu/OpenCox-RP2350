@@ -22,12 +22,14 @@ class MPU6050:
     # FIFO packet layout: accel_x/y/z + gyro_x/y/z, 2 bytes each (temp is not
     # enabled in FIFO_EN, so no TEMP_OUT bytes are interleaved between them).
     FIFO_PACKET_SIZE = 12
+    FIFO_SIZE = 1024  # not a multiple of FIFO_PACKET_SIZE: see read_fifo()
 
     def __init__(self, i2c, addr=0x68, sample_rate_hz=100, dlpf_cfg=3):
         self.i2c = i2c
         self.addr = addr
         self.sample_rate_hz = 0
         self.dlpf_cfg = 0
+        self.fifo_overflows = 0
 
         self._write_u8(self.PWR_MGMT_1, 0x00)
         self._write_u8(self.GYRO_CONFIG, 0x00)
@@ -86,6 +88,11 @@ class MPU6050:
         self._write_u8(self.FIFO_EN, value)
         self._write_u8(self.USER_CTRL, 0x40)
 
+    def reset_fifo(self):
+        """Discard everything in the FIFO, so the next read starts on a packet."""
+        self._write_u8(self.USER_CTRL, 0x04)  # FIFO_RESET (only acts with FIFO_EN cleared)
+        self._write_u8(self.USER_CTRL, 0x40)
+
     def fifo_count(self):
         high = self._read_u8(self.FIFO_COUNT_H)
         low = self._read_u8(self.FIFO_COUNT_L)
@@ -98,6 +105,15 @@ class MPU6050:
     def read_fifo(self):
         count = self.fifo_count()
         if count == 0:
+            return []
+        if count >= self.FIFO_SIZE:
+            # Full: the chip has been dropping its oldest bytes, and as 1024
+            # is not a multiple of 12 the oldest byte left is no longer the
+            # start of a packet. Reading on would file every value under the
+            # wrong name for the rest of the session. Drop the backlog and
+            # start clean instead.
+            self.reset_fifo()
+            self.fifo_overflows += 1
             return []
         # Only read whole packets; the FIFO can be mid-write on the next byte.
         usable = count - (count % self.FIFO_PACKET_SIZE)

@@ -80,10 +80,8 @@ class I2cLcd(LcdApi):
         # The HD44780 needs E high for >=450 ns and a >=1 us cycle time. A
         # single-byte write to the PCF8574 at 400 kHz already takes ~50 us,
         # so the bus transaction itself covers both; sleep_us(1) is margin.
-        # These were sleep_ms(1), which made every character 4 ms and every
-        # four-line refresh ~336 ms of blocking sleep out of a 500 ms
-        # period -- long enough to overrun the GPS UART buffer and lose most
-        # of the NMEA stream.
+        # Millisecond sleeps here would block a four-line refresh for over
+        # 300 ms, long enough to overrun the GPS UART buffer.
         self._expander_write(data | self.ENABLE)
         sleep_us(1)
         self._expander_write(data & ~self.ENABLE)

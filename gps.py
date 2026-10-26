@@ -18,8 +18,7 @@ gps_lat = None
 gps_lon = None
 gps_time = None
 gps_date = None
-gps_speed = None        # Speed in knots from RMC or VTG
-gps_speed_ms = None     # Speed converted to m/s
+gps_speed_ms = None     # Speed over ground (RMC) in m/s
 gps_course = None       # Course over ground in degrees
 gps_hdop = None         # Horizontal Dilution of Precision
 gps_last_sentence = ""
@@ -27,18 +26,18 @@ gps_rx_ms = 0
 gps_sentence_count = 0   # sentences that passed their NMEA checksum
 gps_bad_sentence_count = 0  # sentences rejected by the checksum (truncation/corruption)
 gps_raw_byte_count = 0  # total bytes ever read from the GPS UART, valid or not
-gps_last_print_ms = 0
 gps_seen_data = False
-gps_lost_reported = False
-stopped = True
-last_speed_update_ms = 0
-speed_update_count = 0
 
 # Distance tracking
 total_distance_m = 0.0
+total_rowing_s = 0.0    # GPS time covered by the steps added to total_distance_m
 last_gps_lat = None
 last_gps_lon = None
 last_gps_time = None
+
+# Recent speeds for the LCD pace average: (gps_time, speed_ms), one per fix.
+SPEED_HISTORY_S = 10  # longest span speed_average_ms/_between() can average over
+speed_history = []
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +99,7 @@ def nmea_checksum_valid(sentence):
     return checksum == expected
 
 
-def parse_gps_time(time_str, date_str=None):
+def parse_gps_time(time_str):
     if not time_str:
         return None
     try:
@@ -188,9 +187,7 @@ def build_cfg_rate_packet(update_hz):
 def update_gps_state(sentence):
     global gps_fix, gps_quality, gps_sats, gps_sats_in_view, gps_lat, gps_lon
     global gps_rx_ms, gps_sentence_count, gps_bad_sentence_count, gps_last_sentence
-    global gps_seen_data, gps_lost_reported, stopped
-    global gps_time, gps_date, gps_speed, gps_speed_ms
-    global gps_course, gps_hdop, speed_update_count, last_speed_update_ms
+    global gps_seen_data, gps_time, gps_date, gps_speed_ms, gps_course, gps_hdop
 
     if not sentence.startswith("$"):
         return
@@ -205,13 +202,15 @@ def update_gps_state(sentence):
     gps_rx_ms = utime.ticks_ms()
     if not gps_seen_data:
         gps_seen_data = True
-        gps_lost_reported = False
         print("GPS data received")
     parts = sentence.split(",")
     if len(parts) < 2:
         return
     message_type = parts[0][3:]
 
+    # Only RMC, GGA and GSV are parsed: main.py switches GSA, VTG and GLL
+    # off, since they only repeat what RMC and GGA carry. Until that config
+    # is applied they still arrive, and are ignored.
     if message_type == "GGA" and len(parts) >= 8:
         gps_quality = parts[6] or gps_quality
         gps_sats = parts[7] or gps_sats
@@ -223,6 +222,9 @@ def update_gps_state(sentence):
             gps_lon = lon
         gps_fix = parts[6] not in ("", "0")
         gps_time = parse_gps_time(parts[1] if len(parts) > 1 else None)
+        hdop = parse_nmea_float(parts[8] if len(parts) > 8 else None)
+        if hdop is not None:
+            gps_hdop = hdop
 
     elif message_type == "RMC" and len(parts) >= 8:
         if parts[2] == "A":
@@ -239,54 +241,20 @@ def update_gps_state(sentence):
         gps_date = parse_gps_date(parts[9] if len(parts) > 9 else None)
         speed_knots = parse_nmea_float(parts[7] if len(parts) > 7 else None)
         if speed_knots is not None:
-            gps_speed = speed_knots
             gps_speed_ms = speed_knots * 0.514444
-            speed_update_count += 1
-            last_speed_update_ms = utime.ticks_ms()
+            if parts[2] == "A" and gps_time is not None:
+                record_speed(gps_time, gps_speed_ms)
+        # Course over ground.
+        course = parse_nmea_float(parts[8] if len(parts) > 8 else None)
+        if course is not None:
+            gps_course = course
 
     elif message_type == "GSV" and len(parts) >= 4:
         # GSV field 3 is satellites in VIEW, a different quantity from GGA's
-        # satellites used in the solution. Writing it to gps_sats made the two
-        # alternate in the same variable depending on which sentence arrived
-        # last. In view is the useful number while acquiring: it climbs long
-        # before the fix, so it tells you the receiver is making progress.
+        # satellites used in the solution, so it has its own variable. In
+        # view is the useful number while acquiring: it climbs long before
+        # the fix, so it tells you the receiver is making progress.
         gps_sats_in_view = parts[3] or gps_sats_in_view
-
-    elif message_type == "GLL" and len(parts) >= 7:
-        lat = parse_nmea_coordinate(parts[1], parts[2])
-        lon = parse_nmea_coordinate(parts[3], parts[4])
-        if lat is not None:
-            gps_lat = lat
-        if lon is not None:
-            gps_lon = lon
-        gps_time = parse_gps_time(parts[5] if len(parts) > 5 else None)
-        status = parts[6] if len(parts) > 6 else ""
-        if status == "A":
-            gps_fix = True
-        elif status == "V":
-            gps_fix = False
-
-    elif message_type == "GSA" and len(parts) >= 17:
-        # parts[15] is PDOP, parts[16] is HDOP, parts[17] is VDOP.
-        if parts[16]:
-            try:
-                gps_hdop = float(parts[16])
-            except ValueError:
-                pass
-
-    elif message_type == "VTG" and len(parts) >= 7:
-        speed_knots = parse_nmea_float(parts[5] if len(parts) > 5 else None)
-        speed_kmh = parse_nmea_float(parts[7] if len(parts) > 7 else None)
-        if speed_knots is None and speed_kmh is not None:
-            speed_knots = speed_kmh / 1.852
-        if speed_knots is not None:
-            gps_speed = speed_knots
-            gps_speed_ms = speed_knots * 0.514444
-            speed_update_count += 1
-            last_speed_update_ms = utime.ticks_ms()
-        course = parse_nmea_float(parts[1] if len(parts) > 1 else None)
-        if course is not None:
-            gps_course = course
 
 
 def gps_feed_bytes(chunk):
@@ -323,16 +291,25 @@ def gps_feed_bytes(chunk):
 # Distance tracking (Haversine)
 # ---------------------------------------------------------------------------
 
-def calculate_distance_traveled(rowing):
+def calculate_distance_traveled(rowing, min_step_s=0.0):
     """Move the distance baseline to the current position.
 
-    The step is only added to total_distance_m when rowing. The baseline
-    moves either way: if it stayed put while drifting on the current or
-    manoeuvring, all of that would be added in one jump on the first step
+    The step is only added to total_distance_m when rowing, and its duration
+    to total_rowing_s, so the two always cover the same stretches. The
+    baseline moves either way: if it stayed put while drifting on the current
+    or manoeuvring, all of that would be added in one jump on the first step
     after rowing resumed.
+
+    No step is taken until the fix is min_step_s newer than the baseline.
+    Summing five 0.2 s steps a second would add every fix's position jitter
+    into the distance.
     """
-    global total_distance_m, last_gps_lat, last_gps_lon, last_gps_time
+    global total_distance_m, total_rowing_s, last_gps_lat, last_gps_lon, last_gps_time
     if gps_lat is None or gps_lon is None:
+        return total_distance_m
+    # 0.05 s of slack: fix times are float sums, so 1.0 s can come out as
+    # 0.99999. A negative gap (midnight rollover) takes the step.
+    if gps_time is not None and last_gps_time is not None and 0 <= gps_time - last_gps_time < min_step_s - 0.05:
         return total_distance_m
     if rowing and last_gps_lat is not None and last_gps_lon is not None:
         lat1 = last_gps_lat * 3.1415926535 / 180.0
@@ -345,6 +322,9 @@ def calculate_distance_traveled(rowing):
         a = max(0.0, min(1.0, a))  # Clamp against float precision drift
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         total_distance_m += 6371000 * c
+        # A negative gap (midnight rollover) adds no time.
+        if gps_time is not None and last_gps_time is not None and gps_time > last_gps_time:
+            total_rowing_s += gps_time - last_gps_time
     last_gps_lat = gps_lat
     last_gps_lon = gps_lon
     last_gps_time = gps_time
@@ -358,6 +338,58 @@ def sync_distance_baseline():
     last_gps_lat = gps_lat
     last_gps_lon = gps_lon
     last_gps_time = gps_time
+
+
+# ---------------------------------------------------------------------------
+# Speed averaging
+# ---------------------------------------------------------------------------
+
+def record_speed(fix_time, speed_ms):
+    if speed_history:
+        last_time = speed_history[-1][0]
+        if fix_time == last_time:
+            return
+        if fix_time < last_time:
+            # Midnight rollover or a receiver restart: the old times no
+            # longer compare with the new ones.
+            speed_history.clear()
+    speed_history.append((fix_time, speed_ms))
+    while speed_history[0][0] <= fix_time - SPEED_HISTORY_S:
+        speed_history.pop(0)
+
+
+def speed_average_ms(window_s):
+    """Mean speed of the fixes in the last window_s seconds, or None.
+
+    The window ends at the newest fix, not at the current time, so fixes
+    from before a gap in the fix are never mixed with the ones after it.
+    """
+    if not speed_history:
+        return None
+    oldest = speed_history[-1][0] - window_s
+    total = 0.0
+    count = 0
+    for fix_time, speed_ms in speed_history:
+        if fix_time > oldest:
+            total += speed_ms
+            count += 1
+    return total / count
+
+
+def speed_average_between(start_time, end_time):
+    """Mean speed of the fixes after start_time up to end_time, or None.
+
+    Both are fix times, so consecutive spans share no fix.
+    """
+    total = 0.0
+    count = 0
+    for fix_time, speed_ms in speed_history:
+        if start_time < fix_time <= end_time:
+            total += speed_ms
+            count += 1
+    if not count:
+        return None
+    return total / count
 
 
 # ---------------------------------------------------------------------------
@@ -375,19 +407,6 @@ def format_course(course):
     if course is None:
         return "--"
     return "%.1f\u00b0" % course
-
-
-def get_gps_timestamp():
-    return gps_time
-
-
-def format_gps_timestamp():
-    if gps_time is None:
-        return "TIME: --"
-    hours = int(gps_time // 3600)
-    minutes = int((gps_time % 3600) // 60)
-    seconds = int(gps_time % 60)
-    return "TIME: %02d:%02d:%02d" % (hours, minutes, seconds)
 
 
 # ---------------------------------------------------------------------------
